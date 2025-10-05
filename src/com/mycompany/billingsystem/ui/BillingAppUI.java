@@ -6,6 +6,8 @@ import com.mycompany.billingsystem.model.User;
 import com.mycompany.billingsystem.util.PdfGenerator;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.io.File;
@@ -19,9 +21,8 @@ import java.util.concurrent.ExecutionException;
 
 /**
  * The main UI for the billing system.
- * This version has been refactored for robustness, performance, and security.
- * - Uses SwingWorker for all database operations to keep the UI responsive.
- * - Improved type safety, input validation, and security.
+ * This version includes an Admin Dashboard, discount feature, and has been
+ * refactored for robustness, performance, and security using SwingWorker.
  */
 public class BillingAppUI extends JFrame {
 
@@ -30,12 +31,10 @@ public class BillingAppUI extends JFrame {
     private DefaultTableModel billTableModel;
     private JTable billTable;
     private JLabel totalAmountLabel;
-    
-    // Data model for the current bill. Map's key is the Product, value is the quantity.
-    // NOTE: This relies on a correct equals() and hashCode() implementation in the Product class.
     private final Map<Product, Integer> billItems = new HashMap<>();
-    // A list to keep track of products in the bill table in the correct order for easy removal.
     private final List<Product> productsInBillTable = new ArrayList<>();
+    private JTextField discountField;
+    private JComboBox<String> discountTypeComboBox;
 
     private JTable inventoryTable;
     private DefaultTableModel inventoryTableModel;
@@ -54,11 +53,14 @@ public class BillingAppUI extends JFrame {
     private JComboBox<String> userSelectionComboBox;
     private JPasswordField resetPasswordField;
 
+    private JLabel todaysSalesValueLabel, todaysBillsValueLabel;
+    private DefaultTableModel lowStockTableModel;
+    private DefaultTableModel topSellingTableModel;
+
     private final String currentUserRole;
 
     public BillingAppUI(String userRole) {
         this.currentUserRole = userRole;
-
         setTitle("Stock and Billing System - Role: " + userRole.toUpperCase());
         setSize(1000, 750);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -67,6 +69,9 @@ public class BillingAppUI extends JFrame {
         JTabbedPane tabbedPane = new JTabbedPane();
 
         // --- Tab Setup Based on Role ---
+        if ("administrator".equals(currentUserRole)) {
+            tabbedPane.addTab("Dashboard", null, createDashboardPanel(), "Business overview");
+        }
         tabbedPane.addTab("Billing", null, createBillingPanel(), "Point of Sale");
 
         if ("administrator".equals(currentUserRole)) {
@@ -77,21 +82,74 @@ public class BillingAppUI extends JFrame {
             tabbedPane.addTab("Add Product", null, createAddOnlyProductsPanel(), "Add new products to inventory");
         }
         
-        // This listener correctly handles loading data only when a tab is selected.
         tabbedPane.addChangeListener(e -> {
             String selectedTitle = tabbedPane.getTitleAt(tabbedPane.getSelectedIndex());
             switch (selectedTitle) {
+                case "Dashboard": refreshDashboard(); break;
                 case "Manage Products": refreshInventoryTable(); break;
                 case "Sales History": refreshSalesHistoryTable(); break;
                 case "Manage Users": refreshUsersTable(); break;
             }
         });
-
+        
         add(tabbedPane);
         setVisible(true);
+
+        // Initial load for the first visible tab
+        if ("administrator".equals(currentUserRole)) {
+            refreshDashboard();
+        }
+    }
+    
+    // --- Panel Creation Methods ---
+    
+    private JPanel createDashboardPanel() {
+        JPanel panel = new JPanel(new BorderLayout(20, 20));
+        panel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
+
+        JPanel metricsPanel = new JPanel(new GridLayout(1, 2, 20, 0));
+        metricsPanel.add(createMetricCard("Today's Sales", "₹ 0.00", todaysSalesValueLabel = new JLabel()));
+        metricsPanel.add(createMetricCard("Today's Bills", "0", todaysBillsValueLabel = new JLabel()));
+        panel.add(metricsPanel, BorderLayout.NORTH);
+
+        JPanel listsPanel = new JPanel(new GridLayout(1, 2, 20, 0));
+        
+        String[] lowStockColumns = {"Product Name", "Stock Left"};
+        lowStockTableModel = new DefaultTableModel(lowStockColumns, 0);
+        JTable lowStockTable = new JTable(lowStockTableModel);
+        JPanel lowStockPanel = new JPanel(new BorderLayout());
+        lowStockPanel.setBorder(BorderFactory.createTitledBorder("Low Stock Alerts (<= 10 items)"));
+        lowStockPanel.add(new JScrollPane(lowStockTable), BorderLayout.CENTER);
+        
+        String[] topSellingColumns = {"Product Name", "Units Sold (Month)"};
+        topSellingTableModel = new DefaultTableModel(topSellingColumns, 0);
+        JTable topSellingTable = new JTable(topSellingTableModel);
+        JPanel topSellingPanel = new JPanel(new BorderLayout());
+        topSellingPanel.setBorder(BorderFactory.createTitledBorder("Top Selling Products (This Month)"));
+        topSellingPanel.add(new JScrollPane(topSellingTable), BorderLayout.CENTER);
+
+        listsPanel.add(lowStockPanel);
+        listsPanel.add(topSellingPanel);
+        panel.add(listsPanel, BorderLayout.CENTER);
+
+        return panel;
     }
 
-    // --- Panel Creation Methods ---
+    private JPanel createMetricCard(String title, String initialValue, JLabel valueLabel) {
+        JPanel card = new JPanel(new BorderLayout());
+        card.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Color.LIGHT_GRAY),
+            BorderFactory.createEmptyBorder(10, 10, 10, 10)
+        ));
+        JLabel titleLabel = new JLabel(title, SwingConstants.CENTER);
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        valueLabel.setText(initialValue);
+        valueLabel.setFont(new Font("Arial", Font.BOLD, 28));
+        valueLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        card.add(titleLabel, BorderLayout.NORTH);
+        card.add(valueLabel, BorderLayout.CENTER);
+        return card;
+    }
 
     private JPanel createBillingPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
@@ -115,14 +173,31 @@ public class BillingAppUI extends JFrame {
         JPanel bottomPanel = new JPanel(new BorderLayout());
         totalAmountLabel = new JLabel("Total: ₹ 0.00");
         totalAmountLabel.setFont(new Font("Arial", Font.BOLD, 20));
-        bottomPanel.add(totalAmountLabel, BorderLayout.WEST);
+        
+        JPanel controlsPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        controlsPanel.add(new JLabel("Discount:"));
+        discountField = new JTextField(5);
+        controlsPanel.add(discountField);
+        discountTypeComboBox = new JComboBox<>(new String[]{"₹", "%"});
+        controlsPanel.add(discountTypeComboBox);
         JButton finalizeButton = new JButton("Finalize Bill");
-        bottomPanel.add(finalizeButton, BorderLayout.EAST);
+        controlsPanel.add(finalizeButton);
+
+        bottomPanel.add(totalAmountLabel, BorderLayout.WEST);
+        bottomPanel.add(controlsPanel, BorderLayout.EAST);
         panel.add(bottomPanel, BorderLayout.SOUTH);
 
         barcodeField.addActionListener(e -> addProductToBill());
         removeItemButton.addActionListener(e -> removeSelectedItemFromBill());
         finalizeButton.addActionListener(e -> finalizeBill());
+        
+        DocumentListener discountListener = new DocumentListener() {
+            public void changedUpdate(DocumentEvent e) { updateTotalAmount(); }
+            public void removeUpdate(DocumentEvent e) { updateTotalAmount(); }
+            public void insertUpdate(DocumentEvent e) { updateTotalAmount(); }
+        };
+        discountField.getDocument().addDocumentListener(discountListener);
+        discountTypeComboBox.addActionListener(e -> updateTotalAmount());
 
         return panel;
     }
@@ -304,7 +379,6 @@ public class BillingAppUI extends JFrame {
         String barcode = barcodeField.getText().trim();
         if (barcode.isEmpty()) return;
 
-        // Use SwingWorker to fetch product from DB without freezing UI
         new SwingWorker<Product, Void>() {
             @Override
             protected Product doInBackground() {
@@ -324,8 +398,7 @@ public class BillingAppUI extends JFrame {
                         refreshBillTable();
                     }
                 } catch (InterruptedException | ExecutionException e) {
-                    e.printStackTrace();
-                    JOptionPane.showMessageDialog(BillingAppUI.this, "Error fetching product: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                    handleWorkerException(e, "Error fetching product");
                 } finally {
                     barcodeField.setText("");
                     barcodeField.requestFocusInWindow();
@@ -341,9 +414,7 @@ public class BillingAppUI extends JFrame {
             return;
         }
 
-        // Reliably get the product from the backing list
         Product productToRemove = productsInBillTable.get(selectedRow);
-
         int currentQuantity = billItems.get(productToRemove);
         if (currentQuantity > 1) {
             billItems.put(productToRemove, currentQuantity - 1);
@@ -355,19 +426,41 @@ public class BillingAppUI extends JFrame {
 
     private void refreshBillTable() {
         billTableModel.setRowCount(0);
-        productsInBillTable.clear(); // Clear the backing list
-        double total = 0;
-        
+        productsInBillTable.clear();
         for (Map.Entry<Product, Integer> entry : billItems.entrySet()) {
             Product p = entry.getKey();
             int qty = entry.getValue();
-            double itemTotal = p.getPrice() * qty;
-            total += itemTotal;
-            
-            billTableModel.addRow(new Object[]{ p.getName(), String.format("%.2f", p.getPrice()), String.format("%.1f%%", p.getTaxSlab()), qty, String.format("%.2f", itemTotal) });
-            productsInBillTable.add(p); // Add product to backing list in the same order as the table
+            billTableModel.addRow(new Object[]{ p.getName(), p.getPrice(), p.getTaxSlab(), qty, p.getPrice() * qty });
+            productsInBillTable.add(p);
         }
-        totalAmountLabel.setText(String.format("Total: ₹ %.2f", total));
+        updateTotalAmount();
+    }
+    
+    private void updateTotalAmount() {
+        double subtotal = billItems.entrySet().stream().mapToDouble(e -> e.getKey().getPrice() * e.getValue()).sum();
+        double discountValue = 0;
+        try {
+            String discountText = discountField.getText().trim();
+            if (!discountText.isEmpty()) {
+                discountValue = Double.parseDouble(discountText);
+            }
+        } catch (NumberFormatException e) {
+            // Ignore invalid format during real-time updates
+        }
+
+        double discountAmount = 0;
+        if (discountValue > 0) {
+            if ("%".equals(discountTypeComboBox.getSelectedItem())) {
+                discountAmount = (subtotal * discountValue) / 100.0;
+            } else { // "₹"
+                discountAmount = discountValue;
+            }
+        }
+        
+        double grandTotal = subtotal - discountAmount;
+        if (grandTotal < 0) grandTotal = 0;
+        
+        totalAmountLabel.setText(String.format("Total: ₹ %.2f", grandTotal));
     }
 
     private void finalizeBill() {
@@ -376,88 +469,135 @@ public class BillingAppUI extends JFrame {
             return;
         }
 
-        double totalAmount = billItems.entrySet().stream()
-            .mapToDouble(entry -> entry.getKey().getPrice() * entry.getValue())
-            .sum();
+        double subtotal = billItems.entrySet().stream().mapToDouble(e -> e.getKey().getPrice() * e.getValue()).sum();
+        double discountValue = 0;
+        try {
+            String discountText = discountField.getText().trim();
+            if (!discountText.isEmpty()) {
+                discountValue = Double.parseDouble(discountText);
+            }
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "Invalid discount value. Please enter a valid number.", "Input Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        
+        double discountAmount = 0;
+        if (discountValue > 0) {
+            if ("%".equals(discountTypeComboBox.getSelectedItem())) {
+                discountAmount = (subtotal * discountValue) / 100.0;
+            } else {
+                discountAmount = discountValue;
+            }
+        }
+        
+        double grandTotal = subtotal - discountAmount;
+        if (grandTotal < 0) grandTotal = 0;
 
         int confirm = JOptionPane.showConfirmDialog(this,
-            String.format("Finalize bill with a total of ₹ %.2f?", totalAmount),
+            String.format("Subtotal: ₹ %.2f\nDiscount: - ₹ %.2f\nGrand Total: ₹ %.2f\n\nFinalize this bill?", subtotal, discountAmount, grandTotal),
             "Confirm Bill", JOptionPane.YES_NO_OPTION);
 
         if (confirm == JOptionPane.YES_OPTION) {
-            // Use SwingWorker to save the bill and generate PDF off the EDT
+            final double finalDiscount = discountAmount;
+            final double finalGrandTotal = grandTotal;
             new SwingWorker<Long, Void>() {
-                @Override
-                protected Long doInBackground() {
-                    return DatabaseManager.saveBill(billItems, totalAmount);
-                }
-
-                @Override
-                protected void done() {
+                @Override protected Long doInBackground() { return DatabaseManager.saveBill(billItems, finalGrandTotal); }
+                @Override protected void done() {
                     try {
                         long billId = get();
                         if (billId != -1) {
-                            String pdfPath = PdfGenerator.generateBillPdf(billId, billItems, totalAmount);
+                            PdfGenerator.generateBillPdf(billId, billItems, subtotal, finalDiscount, finalGrandTotal);
                             
-                            // IMPROVED: More user-friendly dialog with a robust option to open the folder.
                             List<Object> message = new ArrayList<>();
                             message.add("Bill finalized successfully!");
                             message.add("PDF saved in the 'bills' directory.");
                             
-                            if (Desktop.isDesktopSupported()) {
+                            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
                                 JButton openFolderButton = new JButton("Open Bill Location");
                                 openFolderButton.addActionListener(e -> {
                                     try {
                                         Desktop.getDesktop().open(new File("bills"));
-                                    } catch (IOException ex) {
+                                    } catch (IOException | IllegalArgumentException ex) {
                                         JOptionPane.showMessageDialog(BillingAppUI.this, "Could not open bills directory.", "Error", JOptionPane.ERROR_MESSAGE);
                                     }
                                 });
                                 message.add(openFolderButton);
                             }
                             
-                            JOptionPane.showMessageDialog(BillingAppUI.this, 
-                                message.toArray(),
-                                "Success", 
-                                JOptionPane.INFORMATION_MESSAGE);
+                            JOptionPane.showMessageDialog(BillingAppUI.this, message.toArray(), "Success", JOptionPane.INFORMATION_MESSAGE);
 
                             billItems.clear();
+                            discountField.setText("");
                             refreshBillTable();
                             
                             if (inventoryTableModel != null) {
                                 refreshInventoryTable();
                             }
+                            if (todaysSalesValueLabel != null) {
+                                refreshDashboard();
+                            }
                         } else {
                             throw new Exception("saveBill returned -1");
                         }
                     } catch (Exception e) {
-                        e.printStackTrace();
-                        JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to finalize bill: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                        handleWorkerException(e, "Failed to finalize bill");
                     }
                 }
             }.execute();
         }
     }
-
-    private void refreshInventoryTable() {
-        if (inventoryTableModel == null) return;
-        new SwingWorker<List<Product>, Void>() {
+    
+    private void refreshDashboard() {
+        if (todaysSalesValueLabel == null) return;
+        new SwingWorker<Map<String, Object>, Void>() {
             @Override
-            protected List<Product> doInBackground() {
-                return DatabaseManager.getAllProducts();
+            protected Map<String, Object> doInBackground() {
+                Map<String, Object> data = new HashMap<>();
+                data.put("sales", DatabaseManager.getTodaysTotalSales());
+                data.put("bills", DatabaseManager.getTodaysBillCount());
+                data.put("lowStock", DatabaseManager.getLowStockProducts(10));
+                data.put("topSelling", DatabaseManager.getTopSellingProductsThisMonth(5));
+                return data;
             }
-
             @Override
             protected void done() {
                 try {
-                    List<Product> products = get();
+                    Map<String, Object> data = get();
+                    todaysSalesValueLabel.setText(String.format("₹ %.2f", (double) data.get("sales")));
+                    todaysBillsValueLabel.setText(String.valueOf((int) data.get("bills")));
+
+                    lowStockTableModel.setRowCount(0);
+                    @SuppressWarnings("unchecked")
+                    List<Product> lowStock = (List<Product>) data.get("lowStock");
+                    for (Product p : lowStock) {
+                        lowStockTableModel.addRow(new Object[]{p.getName(), p.getStockQuantity()});
+                    }
+
+                    topSellingTableModel.setRowCount(0);
+                    @SuppressWarnings("unchecked")
+                    List<Object[]> topSelling = (List<Object[]>) data.get("topSelling");
+                    for (Object[] row : topSelling) {
+                        topSellingTableModel.addRow(row);
+                    }
+                } catch (Exception e) {
+                    handleWorkerException(e, "Failed to load dashboard data");
+                }
+            }
+        }.execute();
+    }
+    
+    private void refreshInventoryTable() {
+        if (inventoryTableModel == null) return;
+        new SwingWorker<List<Product>, Void>() {
+            @Override protected List<Product> doInBackground() { return DatabaseManager.getAllProducts(); }
+            @Override protected void done() {
+                try {
                     inventoryTableModel.setRowCount(0);
-                    for (Product p : products) {
+                    for (Product p : get()) {
                         inventoryTableModel.addRow(new Object[]{p.getBarcode(), p.getName(), p.getPrice(), p.getStockQuantity(), p.getTaxSlab()});
                     }
                 } catch (Exception e) {
-                    e.printStackTrace();
-                    JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to load inventory: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                    handleWorkerException(e, "Failed to load inventory");
                 }
             }
         }.execute();
@@ -493,14 +633,14 @@ public class BillingAppUI extends JFrame {
 
         Product product = new Product(barcode, name, mrp, stock, taxSlab);
         
-        new SwingWorker<Boolean, String>() {
+        new SwingWorker<Boolean, Void>() {
             private boolean nameExists = false;
 
             @Override
             protected Boolean doInBackground() {
                 if (DatabaseManager.doesProductNameExist(name)) {
                     nameExists = true;
-                    return false; // Don't add yet, confirm with user
+                    return false;
                 }
                 return DatabaseManager.addProduct(product);
             }
@@ -511,12 +651,8 @@ public class BillingAppUI extends JFrame {
                     if (nameExists) {
                         int confirm = JOptionPane.showConfirmDialog(BillingAppUI.this,
                                 "A product with the name '" + name + "' already exists.\nDo you still want to add this new product?",
-                                "Duplicate Product Name",
-                                JOptionPane.YES_NO_OPTION,
-                                JOptionPane.WARNING_MESSAGE);
-
+                                "Duplicate Product Name", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
                         if (confirm == JOptionPane.YES_OPTION) {
-                            // Run another worker to add the product after confirmation
                             addProductAfterConfirmation(product);
                         }
                         return;
@@ -525,51 +661,39 @@ public class BillingAppUI extends JFrame {
                     if (get()) {
                         JOptionPane.showMessageDialog(BillingAppUI.this, "Product added successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
                         clearAddProductFields();
-                        if ("administrator".equals(currentUserRole)) {
-                            refreshInventoryTable();
-                        }
+                        refreshInventoryTableIfNeeded();
                     } else {
                         throw new Exception("A product with this barcode may already exist.");
                     }
                 } catch (Exception e) {
-                     JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to add product: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                     handleWorkerException(e, "Failed to add product");
                 }
             }
         }.execute();
     }
     
-    // Helper worker to add a product after the user confirms a duplicate name warning.
     private void addProductAfterConfirmation(Product product) {
         new SwingWorker<Boolean, Void>() {
-            @Override
-            protected Boolean doInBackground() {
-                return DatabaseManager.addProduct(product);
-            }
-            @Override
-            protected void done() {
+            @Override protected Boolean doInBackground() { return DatabaseManager.addProduct(product); }
+            @Override protected void done() {
                 try {
                     if (get()) {
                         JOptionPane.showMessageDialog(BillingAppUI.this, "Product added successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
                         clearAddProductFields();
-                        if ("administrator".equals(currentUserRole)) {
-                            refreshInventoryTable();
-                        }
+                        refreshInventoryTableIfNeeded();
                     } else {
                         throw new Exception("A product with this barcode may already exist.");
                     }
                 } catch (Exception e) {
-                    JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to add product: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                    handleWorkerException(e, "Failed to add product");
                 }
             }
         }.execute();
     }
     
     private void clearAddProductFields() {
-        newBarcodeField.setText("");
-        newNameField.setText("");
-        newMrpField.setText("");
-        newTaxSlabField.setText("");
-        newStockField.setText("");
+        newBarcodeField.setText(""); newNameField.setText(""); newMrpField.setText("");
+        newTaxSlabField.setText(""); newStockField.setText("");
     }
 
     private void updateExistingStock() {
@@ -587,24 +711,18 @@ public class BillingAppUI extends JFrame {
         }
         
         new SwingWorker<Boolean, Void>() {
-            @Override
-            protected Boolean doInBackground() {
-                return DatabaseManager.updateStock(barcode, quantity);
-            }
-
-            @Override
-            protected void done() {
+            @Override protected Boolean doInBackground() { return DatabaseManager.updateStock(barcode, quantity); }
+            @Override protected void done() {
                 try {
                     if (get()) {
                         JOptionPane.showMessageDialog(BillingAppUI.this, "Stock updated successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
-                        updateBarcodeField.setText("");
-                        updateQuantityField.setText("");
+                        updateBarcodeField.setText(""); updateQuantityField.setText("");
                         refreshInventoryTable();
                     } else {
                         throw new Exception("Product with this barcode may not exist.");
                     }
                 } catch (Exception e) {
-                    JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to update stock: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                    handleWorkerException(e, "Failed to update stock");
                 }
             }
         }.execute();
@@ -623,13 +741,8 @@ public class BillingAppUI extends JFrame {
 
         if (confirm == JOptionPane.YES_OPTION) {
             new SwingWorker<Boolean, Void>() {
-                @Override
-                protected Boolean doInBackground() {
-                    return DatabaseManager.deleteProductByBarcode(barcode);
-                }
-                
-                @Override
-                protected void done() {
+                @Override protected Boolean doInBackground() { return DatabaseManager.deleteProductByBarcode(barcode); }
+                @Override protected void done() {
                     try {
                         if (get()) {
                             JOptionPane.showMessageDialog(BillingAppUI.this, "Product deleted successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
@@ -639,7 +752,7 @@ public class BillingAppUI extends JFrame {
                              throw new Exception("Product with this barcode may not exist.");
                         }
                     } catch (Exception e) {
-                        JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to delete product: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                        handleWorkerException(e, "Failed to delete product");
                     }
                 }
             }.execute();
@@ -659,17 +772,11 @@ public class BillingAppUI extends JFrame {
             JOptionPane.showMessageDialog(this, "Could not parse bill details from table.", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-
         String billDate = salesHistoryTableModel.getValueAt(selectedRow, 1).toString();
         
         new SwingWorker<List<Object[]>, Void>() {
-            @Override
-            protected List<Object[]> doInBackground() {
-                return DatabaseManager.getBillDetails(billId);
-            }
-            
-            @Override
-            protected void done() {
+            @Override protected List<Object[]> doInBackground() { return DatabaseManager.getBillDetails(billId); }
+            @Override protected void done() {
                 try {
                     List<Object[]> items = get();
                     StringBuilder details = new StringBuilder();
@@ -692,7 +799,7 @@ public class BillingAppUI extends JFrame {
                     scrollPane.setPreferredSize(new Dimension(450, 300));
                     JOptionPane.showMessageDialog(BillingAppUI.this, scrollPane, "Bill Details - #" + billId, JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception e) {
-                    JOptionPane.showMessageDialog(BillingAppUI.this, "Could not fetch bill details: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                    handleWorkerException(e, "Could not fetch bill details");
                 }
             }
         }.execute();
@@ -703,21 +810,15 @@ public class BillingAppUI extends JFrame {
         String filter = (String) salesFilterComboBox.getSelectedItem();
         
         new SwingWorker<List<Object[]>, Void>() {
-            @Override
-            protected List<Object[]> doInBackground() {
-                return DatabaseManager.getSalesHistory(filter);
-            }
-
-            @Override
-            protected void done() {
+            @Override protected List<Object[]> doInBackground() { return DatabaseManager.getSalesHistory(filter); }
+            @Override protected void done() {
                 try {
-                    List<Object[]> history = get();
                     salesHistoryTableModel.setRowCount(0);
-                    for (Object[] row : history) {
+                    for (Object[] row : get()) {
                         salesHistoryTableModel.addRow(row);
                     }
                 } catch (Exception e) {
-                    JOptionPane.showMessageDialog(BillingAppUI.this, "Could not fetch sales history: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                    handleWorkerException(e, "Could not fetch sales history");
                 }
             }
         }.execute();
@@ -727,13 +828,8 @@ public class BillingAppUI extends JFrame {
         if (usersTableModel == null || userSelectionComboBox == null) return;
         
         new SwingWorker<List<User>, Void>() {
-            @Override
-            protected List<User> doInBackground() {
-                return DatabaseManager.getAllUsers();
-            }
-
-            @Override
-            protected void done() {
+            @Override protected List<User> doInBackground() { return DatabaseManager.getAllUsers(); }
+            @Override protected void done() {
                 try {
                     List<User> users = get();
                     usersTableModel.setRowCount(0);
@@ -750,7 +846,7 @@ public class BillingAppUI extends JFrame {
                         userSelectionComboBox.setSelectedItem(selectedItem);
                     }
                 } catch (Exception e) {
-                     JOptionPane.showMessageDialog(BillingAppUI.this, "Could not fetch user list: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                     handleWorkerException(e, "Could not fetch user list");
                 }
             }
         }.execute();
@@ -764,28 +860,21 @@ public class BillingAppUI extends JFrame {
             JOptionPane.showMessageDialog(this, "Username and password cannot be empty.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-
         String password = new String(passwordChars);
         
         new SwingWorker<Boolean, Void>() {
-            @Override
-            protected Boolean doInBackground() {
-                return DatabaseManager.addUser(username, password, "staff");
-            }
-            
-            @Override
-            protected void done() {
+            @Override protected Boolean doInBackground() { return DatabaseManager.addUser(username, password, "staff"); }
+            @Override protected void done() {
                 try {
                     if (get()) {
                         JOptionPane.showMessageDialog(BillingAppUI.this, "Staff member added successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
-                        newStaffUsernameField.setText("");
-                        newStaffPasswordField.setText("");
+                        newStaffUsernameField.setText(""); newStaffPasswordField.setText("");
                         refreshUsersTable();
                     } else {
                         throw new Exception("Username may already exist.");
                     }
                 } catch (Exception e) {
-                     JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to add staff member: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                     handleWorkerException(e, "Failed to add staff member");
                 } finally {
                     java.util.Arrays.fill(passwordChars, ' ');
                 }
@@ -801,29 +890,20 @@ public class BillingAppUI extends JFrame {
             JOptionPane.showMessageDialog(this, "Please select a user to reset their password.", "No User Selected", JOptionPane.WARNING_MESSAGE);
             return;
         }
-        
         if (newPasswordChars.length == 0) {
             JOptionPane.showMessageDialog(this, "The new password cannot be empty.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        
         String newPassword = new String(newPasswordChars);
     
         int confirm = JOptionPane.showConfirmDialog(this,
             "Are you sure you want to reset the password for user '" + selectedUser + "'?",
-            "Confirm Password Reset",
-            JOptionPane.YES_NO_OPTION,
-            JOptionPane.WARNING_MESSAGE);
+            "Confirm Password Reset", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
     
         if (confirm == JOptionPane.YES_OPTION) {
             new SwingWorker<Boolean, Void>() {
-                @Override
-                protected Boolean doInBackground() {
-                    return DatabaseManager.resetUserPassword(selectedUser, newPassword);
-                }
-
-                @Override
-                protected void done() {
+                @Override protected Boolean doInBackground() { return DatabaseManager.resetUserPassword(selectedUser, newPassword); }
+                @Override protected void done() {
                     try {
                         if (get()) {
                             JOptionPane.showMessageDialog(BillingAppUI.this, "Password for user '" + selectedUser + "' has been reset successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
@@ -832,7 +912,7 @@ public class BillingAppUI extends JFrame {
                             throw new Exception("Failed to reset password in database.");
                         }
                     } catch (Exception e) {
-                        JOptionPane.showMessageDialog(BillingAppUI.this, "Failed to reset password: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+                        handleWorkerException(e, "Failed to reset password");
                     } finally {
                         java.util.Arrays.fill(newPasswordChars, ' ');
                     }
@@ -841,6 +921,21 @@ public class BillingAppUI extends JFrame {
         } else {
              java.util.Arrays.fill(newPasswordChars, ' ');
         }
+    }
+    
+    // --- Helper Methods ---
+    
+    private void refreshInventoryTableIfNeeded() {
+        if ("administrator".equals(currentUserRole) && inventoryTableModel != null) {
+            refreshInventoryTable();
+        }
+    }
+    
+    private void handleWorkerException(Exception e, String title) {
+        e.printStackTrace();
+        // Unwrap the exception if it's from the worker's background thread
+        Throwable cause = (e instanceof ExecutionException) ? e.getCause() : e;
+        JOptionPane.showMessageDialog(this, "An error occurred: " + cause.getMessage(), title, JOptionPane.ERROR_MESSAGE);
     }
 }
 
